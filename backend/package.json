@@ -12,7 +12,8 @@
     "test": "node --test",
     "check": "node scripts/check-syntax.js",
     "migrate:roles": "node scripts/migrate-legacy-roles.js",
-    "migrate:stream-security": "node scripts/migrate-stream-security.js"
+    "migrate:stream-security": "node scripts/migrate-stream-security.js",
+    "test:jest": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --config ./jest.config.cjs --runInBand"
   },
   "keywords": [],
   "author": "",
@@ -39,5 +40,9 @@
     "socket.io": "^4.8.3",
     "stripe": "^22.1.1",
     "uuid": "^13.0.0"
+  },
+  "devDependencies": {
+    "jest": "^30.5.2",
+    "supertest": "^7.3.0"
   }
 }
