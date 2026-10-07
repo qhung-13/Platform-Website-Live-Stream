@@ -96,7 +96,24 @@ describe("GET /api/v1/videos/:id", () => {
     expect(response.status).toBe(404);
   });
 
-  test.skip("anonymous cannot read a private video", async () => {
-    // Mongo-backed regression comes next.
+  test("creates an isolated private video fixture", async() => {
+    const user = await User.findById(fixtureUserId);
+    const video = await Video.findById(privateVideoId);
+
+    expect(user).not.toBeNull();
+    expect(video).not.toBeNull();
+
+    expect(video.status).toBe("private");
+    expect(video.userId.toString()).toBe(fixtureUserId.toString());
+    expect(video.videoUrl).toBe("https://example.test/private-video.mp4",);
+  });
+
+  test("anonymous cannot read a private video", async () => {
+    const response = await request(app).get(`/api/v1/videos/${privateVideoId}`);
+
+    expect(JSON.stringify(response.body)).not.toContain(
+      "https://example.test/private-video.mp4",
+    );
+    expect(response.status).not.toBe(200);
   });
 });
