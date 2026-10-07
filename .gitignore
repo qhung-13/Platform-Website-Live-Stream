@@ -39,3 +39,6 @@ Thumbs.db
 
 # Local project backup
 backup-omexlive/
+
+# Graphify generated knowledge graph
+graphify-out/
