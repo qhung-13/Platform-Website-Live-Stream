@@ -36,3 +36,6 @@ Thumbs.db
 !frontend/.env.example
 !media-service/.env.example
 !agent-service/.env.example
+
+# Local project backup
+backup-omexlive/
