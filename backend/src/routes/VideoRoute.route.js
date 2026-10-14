@@ -13,7 +13,7 @@ import {
   undislikeVideo,
   increaseView,
 } from "../controllers/VideoController.controller.js";
-import protect from "../middlewares/Auth.middleware.js";
+import protect, { optionalAuth } from "../middlewares/Auth.middleware.js";
 import { uploadVideo, uploadImage } from "../config/cloudinary.config.js";
 import { uploadLimiter } from "../middlewares/RateLimiting.middleware.js";
 
@@ -29,7 +29,7 @@ router.post(
 );
 router.get("/search", searchVideos);
 router.get("/user/:userId", getVideosByUser);
-router.get("/:id", getVideoById);
+router.get("/:id", optionalAuth, getVideoById);
 router.put("/:id/view", increaseView);
 router.put(
   "/:id",

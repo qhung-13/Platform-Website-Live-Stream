@@ -4,6 +4,8 @@ import "dotenv/config";
 import mongoose from "mongoose";
 import User from "../src/models/User.model.js";
 import Video from "../src/models/Video.model.js";
+import { generateToken } from "../src/utils/createToken.js";
+import cookieParser from "cookie-parser";
 
 import videoRoute from "../src/routes/VideoRoute.route.js";
 
@@ -30,10 +32,14 @@ function getTestMongoUri() {
 describe("GET /api/v1/videos/:id", () => {
   let fixtureUserId;
   let privateVideoId;
+  let publicVideoId;
+  let nonOwnerUserId;
+  let processingVideoId;
+  const originalJwtSecret = process.env.JWT_SECRET;
 
   beforeAll(async () => {
+    process.env.JWT_SECRET = "p01-video-detail-test-secret";
     await mongoose.connect(getTestMongoUri());
-
     const databaseName = mongoose.connection.db?.databaseName;
 
     if (!databaseName?.endsWith("_test")) {
@@ -46,6 +52,12 @@ describe("GET /api/v1/videos/:id", () => {
 
   afterAll(async () => {
     await mongoose.disconnect();
+
+    if (originalJwtSecret === undefined) {
+      delete process.env.JWT_SECRET;
+    } else {
+      process.env.JWT_SECRET = originalJwtSecret;
+    }
   });
 
   beforeEach(async () => {
@@ -56,6 +68,7 @@ describe("GET /api/v1/videos/:id", () => {
       email: `p01_${suffix}@example.test`,
       displayName: "P01 Test User",
       avatar: "https://example.test/avatar.png",
+      streamKey: `p01_owner_stream_${suffix}`,
     });
 
     fixtureUserId = user._id;
@@ -70,6 +83,38 @@ describe("GET /api/v1/videos/:id", () => {
     });
 
     privateVideoId = video._id;
+
+    const publicVideo = await Video.create({
+      userId: user._id,
+      title: "P01 Public Video",
+      description: "Public visibility regression fixture",
+      category: "test",
+      status: "public",
+      videoUrl: "https://example.test/public-video.mp4",
+    });
+
+    publicVideoId = publicVideo._id;
+
+    const processingVideo = await Video.create({
+      userId: user._id,
+      title: "P01 Processing Video",
+      description: "Processing visibility regression fixture",
+      category: "test",
+      status: "processing",
+      videoUrl: "https://example.test/processing-video.mp4",
+    });
+
+    processingVideoId = processingVideo._id;
+
+    const nonOwnerUser = await User.create({
+      username: `p01_non_owner_${suffix}`,
+      email: `p01_non_owner_${suffix}@example.test`,
+      displayName: "P01 Non Owner",
+      avatar: "https://example.test/non-owner-avatar.png",
+      streamKey: `p01_non_owner_stream_${suffix}`,
+    });
+
+    nonOwnerUserId = nonOwnerUser._id;
   });
 
   afterEach(async () => {
@@ -77,17 +122,32 @@ describe("GET /api/v1/videos/:id", () => {
       await Video.deleteOne({ _id: privateVideoId });
     }
 
+    if (publicVideoId) {
+      await Video.deleteOne({ _id: publicVideoId });
+    }
+
+    if (processingVideoId) {
+      await Video.deleteOne({ _id: processingVideoId });
+    }
+
+    if (nonOwnerUserId) {
+      await User.deleteOne({ _id: nonOwnerUserId });
+    }
+
     if (fixtureUserId) {
       await User.deleteOne({ _id: fixtureUserId });
     }
 
     privateVideoId = undefined;
+    publicVideoId = undefined;
+    processingVideoId = undefined;
+    nonOwnerUserId = undefined;
     fixtureUserId = undefined;
   });
 
   const app = express();
-
   app.use(express.json());
+  app.use(cookieParser());
   app.use("/api/v1/videos", videoRoute);
 
   test("Jest request harness can mount the real video route", async () => {
@@ -96,7 +156,7 @@ describe("GET /api/v1/videos/:id", () => {
     expect(response.status).toBe(404);
   });
 
-  test("creates an isolated private video fixture", async() => {
+  test("creates an isolated private video fixture", async () => {
     const user = await User.findById(fixtureUserId);
     const video = await Video.findById(privateVideoId);
 
@@ -105,7 +165,7 @@ describe("GET /api/v1/videos/:id", () => {
 
     expect(video.status).toBe("private");
     expect(video.userId.toString()).toBe(fixtureUserId.toString());
-    expect(video.videoUrl).toBe("https://example.test/private-video.mp4",);
+    expect(video.videoUrl).toBe("https://example.test/private-video.mp4");
   });
 
   test("anonymous cannot read a private video", async () => {
@@ -114,6 +174,163 @@ describe("GET /api/v1/videos/:id", () => {
     expect(JSON.stringify(response.body)).not.toContain(
       "https://example.test/private-video.mp4",
     );
-    expect(response.status).not.toBe(200);
+    expect(response.status).toBe(404);
+  });
+
+  test("anonymous can read a public video", async () => {
+    const response = await request(app).get(`/api/v1/videos/${publicVideoId}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual(
+      expect.objectContaining({
+        _id: publicVideoId.toString(),
+        title: "P01 Public Video",
+        status: "public",
+        userId: expect.objectContaining({
+          _id: fixtureUserId.toString(),
+          username: expect.any(String),
+          displayName: "P01 Test User",
+        }),
+      }),
+    );
+    expect(response.body.videoUrl).toBe(
+      "https://example.test/public-video.mp4",
+    );
+    expect(response.body.userId).not.toHaveProperty("streamKey");
+  });
+
+  test("authenticated non-owner can read a public video", async () => {
+    const token = generateToken(nonOwnerUserId);
+
+    const response = await request(app)
+      .get(`/api/v1/videos/${publicVideoId}`)
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body._id).toBe(publicVideoId.toString());
+    expect(response.body.videoUrl).toBe(
+      "https://example.test/public-video.mp4",
+    );
+  });
+
+  test("authenticated non-owner cannot read a private video", async () => {
+    const token = generateToken(nonOwnerUserId);
+
+    const response = await request(app)
+      .get(`/api/v1/videos/${privateVideoId}`)
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(response.status).toBe(404);
+    expect(JSON.stringify(response.body)).not.toContain(
+      "https://example.test/private-video.mp4",
+    );
+  });
+
+  test("owner can read their own private video", async () => {
+    const token = generateToken(fixtureUserId);
+
+    const response = await request(app)
+      .get(`/api/v1/videos/${privateVideoId}`)
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body._id).toBe(privateVideoId.toString());
+    expect(response.body.videoUrl).toBe(
+      "https://example.test/private-video.mp4",
+    );
+  });
+
+  test("owner cannot read their own processing video", async () => {
+    const token = generateToken(fixtureUserId);
+
+    const response = await request(app)
+      .get(`/api/v1/videos/${processingVideoId}`)
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(response.status).toBe(404);
+    expect(JSON.stringify(response.body)).not.toContain(
+      "https://example.test/processing-video.mp4",
+    );
+  });
+
+  test("processing video is not readable", async () => {
+    const response = await request(app).get(
+      `/api/v1/videos/${processingVideoId}`,
+    );
+
+    expect(response.status).toBe(404);
+    expect(JSON.stringify(response.body)).not.toContain(
+      "https://example.test/processing-video.mp4",
+    );
+  });
+
+  test("missing video returns 404", async () => {
+    const missingVideoId = new mongoose.Types.ObjectId();
+
+    const response = await request(app).get(`/api/v1/videos/${missingVideoId}`);
+
+    expect(response.status).toBe(404);
+  });
+
+  test("invalid token returns 401 instead of falling back to anonymous", async () => {
+    const response = await request(app)
+      .get(`/api/v1/videos/${publicVideoId}`)
+      .set("Authorization", "Bearer invalid-token");
+
+    expect(response.status).toBe(401);
+  });
+
+  test("invalid JWT cookie returns 401 instead of falling back to anonymous", async () => {
+    const response = await request(app)
+      .get(`/api/v1/videos/${publicVideoId}`)
+      .set("Cookie", ["jwt=invalid-token"]);
+
+    expect(response.status).toBe(401);
+  });
+
+  test("valid JWT for an inactive user returns 401", async () => {
+    const token = generateToken(fixtureUserId);
+    const result = await User.updateOne(
+      { _id: fixtureUserId },
+      { $set: { isActive: false } },
+    );
+    expect(result.modifiedCount).toBe(1);
+
+    const response = await request(app)
+      .get(`/api/v1/videos/${publicVideoId}`)
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(response.status).toBe(401);
+  });
+
+  test("valid JWT for a missing user returns 401", async () => {
+    const token = generateToken(new mongoose.Types.ObjectId());
+
+    const response = await request(app)
+      .get(`/api/v1/videos/${publicVideoId}`)
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(response.status).toBe(401);
+  });
+
+  test("owner can read their own private video via auth cookie", async () => {
+    const token = generateToken(fixtureUserId);
+
+    const response = await request(app)
+      .get(`/api/v1/videos/${privateVideoId}`)
+      .set("Cookie", [`jwt=${token}`]);
+
+    expect(response.status).toBe(200);
+    expect(response.body.videoUrl).toBe(
+      "https://example.test/private-video.mp4",
+    );
+  });
+
+  test("malformed authorization header returns 401 instead of falling back to anonymous", async () => {
+    const response = await request(app)
+      .get(`/api/v1/videos/${publicVideoId}`)
+      .set("Authorization", "Bearer");
+
+    expect(response.status).toBe(401);
   });
 });
