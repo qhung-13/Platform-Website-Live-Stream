@@ -9,19 +9,56 @@ const safeCompare = (provided, expected) => {
   return left.length === right.length && timingSafeEqual(left, right);
 };
 
+const getRequestToken = (req) => {
+  const cookieToken = req.cookies?.jwt;
+
+  if (cookieToken) {
+    return {
+      token: cookieToken,
+      malformed: false,
+    };
+  }
+
+  const authorization = req.headers.authorization;
+
+  if (!authorization) {
+    return {
+      token: null,
+      malformed: false,
+    };
+  }
+
+  if (!authorization.startsWith("Bearer ")) {
+    return {
+      token: null,
+      malformed: true,
+    };
+  }
+
+  const bearerToken = authorization.slice(7).trim();
+
+  if (!bearerToken) {
+    return {
+      token: null,
+      malformed: true,
+    };
+  }
+
+  return {
+    token: bearerToken,
+    malformed: false,
+  };
+};
+
 const resolveUserFromToken = async (token) => {
   const decoded = jwt.verify(token, process.env.JWT_SECRET);
   return User.findById(decoded.userId).select("-password");
 };
 
 const protect = asyncHandler(async (req, res, next) => {
-  const cookieToken = req.cookies?.jwt;
-  const bearerToken = req.headers.authorization?.startsWith("Bearer ")
-    ? req.headers.authorization.slice(7)
-    : null;
-  const token = cookieToken || bearerToken;
+  const { token, malformed } = getRequestToken(req);
 
-  if (!token) {
+  if (!token || malformed) {
     res.status(401);
     throw new Error("Not authorized, no token");
   }
@@ -32,6 +69,33 @@ const protect = asyncHandler(async (req, res, next) => {
       res.status(401);
       throw new Error("Not authorized, account unavailable");
     }
+    req.user = user;
+    next();
+  } catch (error) {
+    res.status(401);
+    throw new Error(error.message || "Not authorized, token failed");
+  }
+});
+
+const optionalAuth = asyncHandler(async (req, res, next) => {
+  const { token, malformed } = getRequestToken(req);
+
+  if (malformed) {
+    res.status(401);
+    throw new Error("Not authorized, malformed authorization header");
+  }
+
+  if (!token) {
+    return next();
+  }
+
+  try {
+    const user = await resolveUserFromToken(token);
+    if (!user || !user.isActive) {
+      res.status(401);
+      throw new Error("Not authorized, account unavailable");
+    }
+
     req.user = user;
     next();
   } catch (error) {
@@ -59,4 +123,4 @@ const authorizeAdmin = (req, res, next) => {
   throw new Error("Not authorized as admin");
 };
 
-export { protect as default, protectOrAgent, authorizeAdmin };
+export { protect as default, protectOrAgent, authorizeAdmin, optionalAuth };

@@ -120,9 +120,18 @@ const getVideos = asyncHandler(async (req, res) =>
 );
 
 const getVideoById = asyncHandler(async (req, res) => {
+  const visibilityConditions = [{ status: "public" }];
+
+  if (req.user) {
+    visibilityConditions.push({
+      status: "private",
+      userId: req.user._id,
+    });
+  }
+
   const video = await Video.findOne({
     _id: req.params.id,
-    status: { $ne: "processing" },
+    $or: visibilityConditions,
   }).populate("userId", "username displayName avatar");
   if (!video) {
     res.status(404);
