@@ -34,7 +34,9 @@ describe("GET /api/v1/videos/:id", () => {
   let privateVideoId;
   let publicVideoId;
   let nonOwnerUserId;
+  let adminUserId;
   let processingVideoId;
+  let fixtureSearchTag;
   const originalJwtSecret = process.env.JWT_SECRET;
 
   beforeAll(async () => {
@@ -62,6 +64,7 @@ describe("GET /api/v1/videos/:id", () => {
 
   beforeEach(async () => {
     const suffix = new mongoose.Types.ObjectId().toString().slice(-8);
+    fixtureSearchTag = suffix;
 
     const user = await User.create({
       username: `p01_${suffix}`,
@@ -76,7 +79,7 @@ describe("GET /api/v1/videos/:id", () => {
     const video = await Video.create({
       userId: user._id,
       title: "P01 Private Video",
-      description: "Private visibility regression fixture",
+      description: `Private visibility regression fixture ${suffix}`,
       category: "test",
       status: "private",
       videoUrl: "https://example.test/private-video.mp4",
@@ -87,7 +90,7 @@ describe("GET /api/v1/videos/:id", () => {
     const publicVideo = await Video.create({
       userId: user._id,
       title: "P01 Public Video",
-      description: "Public visibility regression fixture",
+      description: `Public visibility regression fixture ${suffix}`,
       category: "test",
       status: "public",
       videoUrl: "https://example.test/public-video.mp4",
@@ -98,7 +101,7 @@ describe("GET /api/v1/videos/:id", () => {
     const processingVideo = await Video.create({
       userId: user._id,
       title: "P01 Processing Video",
-      description: "Processing visibility regression fixture",
+      description: `Processing visibility regression fixture ${suffix}`,
       category: "test",
       status: "processing",
       videoUrl: "https://example.test/processing-video.mp4",
@@ -115,6 +118,16 @@ describe("GET /api/v1/videos/:id", () => {
     });
 
     nonOwnerUserId = nonOwnerUser._id;
+
+    const adminUser = await User.create({
+      username: `p01_admin_${suffix}`,
+      email: `p01_admin_${suffix}@example.test`,
+      displayName: "P01 Admin",
+      role: "admin",
+      streamKey: `p01_admin_stream_${suffix}`,
+    });
+
+    adminUserId = adminUser._id;
   });
 
   afterEach(async () => {
@@ -134,6 +147,10 @@ describe("GET /api/v1/videos/:id", () => {
       await User.deleteOne({ _id: nonOwnerUserId });
     }
 
+    if (adminUserId) {
+      await User.deleteOne({ _id: adminUserId });
+    }
+
     if (fixtureUserId) {
       await User.deleteOne({ _id: fixtureUserId });
     }
@@ -142,7 +159,9 @@ describe("GET /api/v1/videos/:id", () => {
     publicVideoId = undefined;
     processingVideoId = undefined;
     nonOwnerUserId = undefined;
+    adminUserId = undefined;
     fixtureUserId = undefined;
+    fixtureSearchTag = undefined;
   });
 
   const app = express();
@@ -226,6 +245,46 @@ describe("GET /api/v1/videos/:id", () => {
     );
   });
 
+  test("admin can read a public video", async () => {
+    const token = generateToken(adminUserId);
+
+    const response = await request(app)
+      .get(`/api/v1/videos/${publicVideoId}`)
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body._id).toBe(publicVideoId.toString());
+    expect(response.body.videoUrl).toBe(
+      "https://example.test/public-video.mp4",
+    );
+  });
+
+  test("admin cannot read another user's private video through content detail", async () => {
+    const token = generateToken(adminUserId);
+
+    const response = await request(app)
+      .get(`/api/v1/videos/${privateVideoId}`)
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(response.status).toBe(404);
+    expect(JSON.stringify(response.body)).not.toContain(
+      "https://example.test/private-video.mp4",
+    );
+  });
+
+  test("admin cannot read a processing video through content detail", async () => {
+    const token = generateToken(adminUserId);
+
+    const response = await request(app)
+      .get(`/api/v1/videos/${processingVideoId}`)
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(response.status).toBe(404);
+    expect(JSON.stringify(response.body)).not.toContain(
+      "https://example.test/processing-video.mp4",
+    );
+  });
+
   test("owner can read their own private video", async () => {
     const token = generateToken(fixtureUserId);
 
@@ -262,6 +321,39 @@ describe("GET /api/v1/videos/:id", () => {
     expect(JSON.stringify(response.body)).not.toContain(
       "https://example.test/processing-video.mp4",
     );
+  });
+
+  test("anonymous general and creator lists expose only the public fixture", async () => {
+    const paths = [
+      "/api/v1/videos?limit=50",
+      `/api/v1/videos/user/${fixtureUserId}?limit=50`,
+    ];
+
+    for (const path of paths) {
+      const response = await request(app).get(path);
+
+      expect(response.status).toBe(200);
+      const videos = response.body.videos;
+      const ids = videos.map((video) => video._id);
+
+      expect(ids).toContain(publicVideoId.toString());
+      expect(ids).not.toContain(privateVideoId.toString());
+      expect(ids).not.toContain(processingVideoId.toString());
+      expect(videos.every((video) => video.status === "public")).toBe(true);
+    }
+  });
+
+  test("anonymous search exposes the public fixture but not its private or processing peers", async () => {
+    const response = await request(app)
+      .get("/api/v1/videos/search")
+      .query({ q: fixtureSearchTag });
+
+    expect(response.status).toBe(200);
+    const ids = response.body.videos.map((video) => video._id);
+
+    expect(ids).toContain(publicVideoId.toString());
+    expect(ids).not.toContain(privateVideoId.toString());
+    expect(ids).not.toContain(processingVideoId.toString());
   });
 
   test("missing video returns 404", async () => {
